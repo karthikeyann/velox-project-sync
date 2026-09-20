@@ -15,6 +15,8 @@ import pathlib
 import subprocess
 import sys
 import time
+
+sys.stdout.reconfigure(line_buffering=True)
 from datetime import datetime, timedelta, timezone
 
 from classify import classify, UNCLASSIFIED
@@ -220,7 +222,12 @@ def main():
             print(f"  = {url} -> {workstream} / {status} / {blocked} / {detail['author']['login']}")
             continue
 
-        if item.get("workstream") != workstream:
+        # Rules only seed the Workstream. Once a human has set it to anything
+        # other than Unclassified, that judgment wins and later runs leave it
+        # alone -- otherwise a hand-fixed misclassification would be reverted
+        # on the next sync.
+        current = item.get("workstream")
+        if current in (None, "", UNCLASSIFIED) and workstream != current:
             set_select(item["id"], fields["Workstream"], workstream)
         if item.get("status") != status:
             set_select(item["id"], fields["Status"], status)
