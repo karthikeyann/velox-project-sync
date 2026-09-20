@@ -1,0 +1,41 @@
+name: Sync Velox + Presto Portfolio
+
+on:
+  schedule:
+    # Every 30 minutes. GitHub may delay scheduled runs under load.
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Report changes without writing to the project"
+        type: boolean
+        default: false
+
+# Serialize runs: two concurrent syncs would race on the project fields.
+concurrency:
+  group: project-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync project
+        env:
+          # Fine-grained PAT with project read/write and repo read.
+          # The default GITHUB_TOKEN cannot reach user-owned Projects v2.
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+        run: python3 sync.py ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      - name: Persist cleared tombstones
+        if: ${{ !inputs.dry_run }}
+        run: |
+          if [ -n "$(git status --porcelain state/)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state/
+            git commit -m "chore: Record cleared project items"
+            git push
+          fi
