@@ -42,6 +42,16 @@ Archived items keep their field values and stay queryable by script, but
 Projects views cannot display them -- there is no include-archived filter.
 They are reachable only through the project's Archived items pane.
 
+## Cost
+
+One paginated GraphQL query returns every board item together with the state
+of the pull request behind it, and field updates are batched many per
+request. A full run over 153 items takes ~20s. The per-item version took
+~8 minutes, which would have exceeded the free Actions tier roughly sixfold
+on a 30-minute schedule.
+
+This repository is public, so Actions minutes are free and unlimited.
+
 ## Setup
 
 The default `GITHUB_TOKEN` cannot write to user-owned Projects v2, so the
