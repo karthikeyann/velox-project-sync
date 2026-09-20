@@ -41,10 +41,11 @@ REPO_RULES = {
     "prestodb/presto": {"search": ["cudf"], "label": None, "drafts": True},
 }
 
-DONE_WEEK = "Done this week"
-DONE_MONTH = "Done this month"
+# Closed PRs get a single Done status; the "merged in the last N days"
+# views select on the built-in Closed date instead of shuffling items
+# between statuses.
+DONE = "Done"
 CLEAR_AFTER_DAYS = 30
-MONTH_AFTER_DAYS = 7
 
 
 def gh(args, retries=4):
@@ -249,7 +250,7 @@ def main():
                             p=PROJECT_ID, i=item["id"])
                     cleared.add(url)
                 continue
-            status = DONE_MONTH if age >= MONTH_AFTER_DAYS else DONE_WEEK
+            status = DONE
             blocked = None
 
         if dry_run:

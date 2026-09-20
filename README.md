@@ -31,6 +31,17 @@ A PR matching nothing lands in `Unclassified` and shows up in the
 **Needs triage** view. Edit the rules in `classify.py`; they are plain
 regexes, deliberately readable.
 
+## Status model
+
+Closed PRs carry a single `Done` status. The "merged in the last N days"
+views select on the built-in `Closed` date rather than moving items between
+week and month statuses; at 30 days `sync.py` archives the item and records
+it in `state/cleared.json`.
+
+Archived items keep their field values and stay queryable by script, but
+Projects views cannot display them -- there is no include-archived filter.
+They are reachable only through the project's Archived items pane.
+
 ## Setup
 
 The default `GITHUB_TOKEN` cannot write to user-owned Projects v2, so the
