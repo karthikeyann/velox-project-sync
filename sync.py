@@ -33,7 +33,10 @@ REPO_RULES = {
     "facebookincubator/velox": {"search": ["cudf"], "label": "cudf", "drafts": True},
     "rapidsai/velox": {"search": [], "label": None, "drafts": True},
     # Non-draft only, by request.
-    "rapidsai/velox-testing": {"search": [], "label": None, "drafts": False},
+    # Non-draft only, and only PRs touched in the last 90 days: the repo
+    # carries long-stale team PRs that are not worth board space.
+    "rapidsai/velox-testing": {"search": [], "label": None, "drafts": False,
+                               "updated_within_days": 90},
     # Manual additions are preserved; only cudf PRs are auto-ingested.
     "prestodb/presto": {"search": ["cudf"], "label": None, "drafts": True},
 }
@@ -59,7 +62,10 @@ def graphql(query, **variables):
     args = ["api", "graphql", "-f", f"query={query}"]
     for key, value in variables.items():
         args += ["-f", f"{key}={value}"]
-    return json.loads(gh(args))
+    result = json.loads(gh(args))
+    if result.get("errors"):
+        raise RuntimeError(f"GraphQL: {result['errors']}")
+    return result
 
 
 def load_fields():
@@ -108,7 +114,8 @@ def ensure_workstream(fields, name):
     options = [{"id": oid, "name": n} for n, oid in workstream["options"].items()]
     options.append({"name": name})
     payload = ",".join(
-        "{" + (f'id:"{o["id"]}",' if "id" in o else "") + f'name:"{o["name"]}"' + "}"
+        "{" + (f'id:"{o["id"]}",' if "id" in o else "")
+        + f'name:"{o["name"]}",color:GRAY,description:""' + "}"
         for o in options)
     graphql("mutation($f:ID!){updateProjectV2Field(input:{fieldId:$f,singleSelectOptions:["
             + payload + "]}){projectV2Field{... on ProjectV2SingleSelectField{id}}}}",
@@ -120,22 +127,44 @@ def ensure_workstream(fields, name):
 def pr_detail(repo, number):
     raw = gh(["pr", "view", str(number), "--repo", repo, "--json",
               "number,title,url,isDraft,state,closedAt,updatedAt,author,labels,"
-              "reviewDecision,statusCheckRollup,reviews"])
+              "latestReviews,reviewRequests,statusCheckRollup"])
     return json.loads(raw)
 
 
 def derive_blocked_on(detail):
+    """Return the Blocked on value for an open PR.
+
+    Ordered so the most specific signal wins. A changes-requested review that
+    the author has re-requested is back on the reviewer; one that has not been
+    re-requested is still the author's to address.
+    """
     if detail["state"] != "OPEN":
         return None
     if detail["isDraft"]:
         return "Me"
-    if detail.get("reviewDecision") == "CHANGES_REQUESTED":
+
+    latest = detail.get("latestReviews") or []
+    requested = {r.get("login") for r in (detail.get("reviewRequests") or [])}
+    changes_requested = [r["author"]["login"] for r in latest
+                         if r["state"] == "CHANGES_REQUESTED"]
+    approvals = sum(1 for r in latest if r["state"] == "APPROVED")
+
+    if changes_requested:
+        # Re-requesting the reviewer puts them back in reviewRequests, which
+        # is how a re-review is distinguishable from the original request.
+        if any(login in requested for login in changes_requested):
+            return "Reviewer"
         return "Me"
-    failing = [c for c in (detail.get("statusCheckRollup") or [])
-               if c.get("conclusion") == "FAILURE"]
-    if failing:
+
+    if not latest:
+        return "Reviewer"
+
+    checks = detail.get("statusCheckRollup") or []
+    failing = any(c.get("conclusion") == "FAILURE" for c in checks)
+
+    if approvals >= 1 and failing:
         return "CI"
-    if detail.get("reviewDecision") == "APPROVED":
+    if approvals >= 2 and not failing:
         return "Nothing - ready to land"
     return "Reviewer"
 
@@ -152,6 +181,11 @@ def ingest(cleared, existing_urls):
         if not queries:
             queries.append([])
         for extra in queries:
+            window = rule.get("updated_within_days")
+            if window:
+                since = (datetime.now(timezone.utc)
+                         - timedelta(days=window)).date().isoformat()
+                extra = [*extra, "--updated", f">={since}"]
             raw = gh(["search", "prs", "--repo", repo, "--state", "open",
                       "--limit", "200", "--json", "number,title,url,isDraft",
                       *extra])
