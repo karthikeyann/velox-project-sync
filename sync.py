@@ -21,7 +21,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-from classify import classify, UNCLASSIFIED
+from classify import classify, is_parked, UNCLASSIFIED
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -66,15 +66,17 @@ query($p:ID!,$cursor:String){
           name field{... on ProjectV2SingleSelectField{name}}}
         ... on ProjectV2ItemFieldTextValue{
           text field{... on ProjectV2Field{name}}}
+        ... on ProjectV2ItemFieldDateValue{
+          date field{... on ProjectV2Field{name}}}
       }}
       content{... on PullRequest{
-        number title url state isDraft closedAt updatedAt
+        number title url state isDraft closedAt updatedAt additions deletions
         author{login}
         repository{nameWithOwner}
         labels(first:20){nodes{name}}
         latestReviews(first:20){nodes{state author{login}}}
         reviewRequests(first:20){nodes{requestedReviewer{... on User{login}}}}
-        commits(last:1){nodes{commit{statusCheckRollup{state}}}}
+        commits(last:1){nodes{commit{committedDate statusCheckRollup{state}}}}
       }}
     }
   }}}
@@ -128,7 +130,8 @@ def fetch_board():
             for value in node["fieldValues"]["nodes"]:
                 name = (value.get("field") or {}).get("name")
                 if name:
-                    fields[name] = value.get("name") or value.get("text")
+                    fields[name] = (value.get("name") or value.get("text")
+                                or value.get("date"))
             items.append({"id": node["id"], "fields": fields, "pr": pull})
         if not page["pageInfo"]["hasNextPage"]:
             return items
@@ -154,7 +157,7 @@ def derive_blocked_on(pull):
     if pull["state"] != "OPEN":
         return None
     if pull["isDraft"]:
-        return "Me"
+        return "Author"
 
     latest = (pull.get("latestReviews") or {}).get("nodes") or []
     requested = {(r.get("requestedReviewer") or {}).get("login")
@@ -168,7 +171,7 @@ def derive_blocked_on(pull):
         # how a re-review is distinguishable from the original request.
         if any(login in requested for login in changes_requested):
             return "Reviewer"
-        return "Me"
+        return "Author"
 
     if not latest:
         return "Reviewer"
@@ -179,6 +182,45 @@ def derive_blocked_on(pull):
     if approvals >= 2 and not failing:
         return "Nothing - ready to land"
     return "Reviewer"
+
+
+def derive_ci(pull):
+    """Map the check rollup onto the CI field."""
+    state = check_state(pull)
+    if state in ("FAILURE", "ERROR"):
+        return "Red"
+    if state in ("PENDING", "EXPECTED"):
+        return "Running"
+    if state == "SUCCESS":
+        return "Green"
+    return "None"
+
+
+# Buckets chosen so review effort, not line count, is what the label conveys.
+SIZE_BUCKETS = [(10, "XS"), (100, "S"), (500, "M"), (1000, "L")]
+
+
+def derive_size(pull):
+    """Bucket a PR by lines changed. Recomputed every run, since a PR grows."""
+    changed = (pull.get("additions") or 0) + (pull.get("deletions") or 0)
+    for limit, label in SIZE_BUCKETS:
+        if changed < limit:
+            return label
+    return "XL"
+
+
+def last_commit_date(pull):
+    """Return the last commit date as YYYY-MM-DD, or None.
+
+    Stored as a date rather than an age in days so it cannot go stale between
+    runs. It also beats updatedAt as an activity signal: upstream velox runs
+    stale[bot], whose comments reset updatedAt and make dormant PRs look
+    fresh, while the commit date reflects real work.
+    """
+    commits = (pull.get("commits") or {}).get("nodes") or []
+    if not commits:
+        return None
+    return (commits[0].get("commit") or {}).get("committedDate", "")[:10] or None
 
 
 def ensure_workstream(fields, name):
@@ -203,9 +245,10 @@ def flush_writes(writes):
     for start in range(0, len(writes), WRITE_BATCH):
         chunk = writes[start:start + WRITE_BATCH]
         parts = []
-        for index, (item_id, field_id, value, is_text) in enumerate(chunk):
-            payload = (f'text:"{value}"' if is_text
-                       else f'singleSelectOptionId:"{value}"')
+        for index, (item_id, field_id, value, kind) in enumerate(chunk):
+            payload = {"text": f'text:"{value}"',
+                       "date": f'date:"{value}"',
+                       "select": f'singleSelectOptionId:"{value}"'}[kind]
             parts.append(
                 f'm{index}:updateProjectV2ItemFieldValue(input:{{'
                 f'projectId:"{PROJECT_ID}",itemId:"{item_id}",'
@@ -273,7 +316,14 @@ def main():
         workstream, is_new = classify(pull["title"], repo, labels)
 
         if pull["state"] == "OPEN":
-            status, blocked = current.get("Status") or "Todo", derive_blocked_on(pull)
+            blocked = derive_blocked_on(pull)
+            if is_parked(pull["title"], labels):
+                status = "Parked"
+            else:
+                # Clear Parked once the marker is gone, but leave a manual
+                # In Progress alone.
+                existing = current.get("Status")
+                status = existing if existing == "In Progress" else "Todo"
         else:
             closed = datetime.fromisoformat(pull["closedAt"].replace("Z", "+00:00"))
             if (now - closed).days >= CLEAR_AFTER_DAYS:
@@ -300,21 +350,34 @@ def main():
                 ensure_workstream(fields, workstream)
             option = fields["Workstream"]["options"].get(workstream)
             if option:
-                writes.append((item["id"], fields["Workstream"]["id"], option, False))
+                writes.append((item["id"], fields["Workstream"]["id"], option, "select"))
 
         if current.get("Status") != status:
             option = fields["Status"]["options"].get(status)
             if option:
-                writes.append((item["id"], fields["Status"]["id"], option, False))
+                writes.append((item["id"], fields["Status"]["id"], option, "select"))
 
         if blocked and current.get("Blocked on") != blocked:
             option = fields["Blocked on"]["options"].get(blocked)
             if option:
-                writes.append((item["id"], fields["Blocked on"]["id"], option, False))
+                writes.append((item["id"], fields["Blocked on"]["id"], option, "select"))
 
         author = pull["author"]["login"]
         if current.get("PR Author") != author:
-            writes.append((item["id"], fields["PR Author"]["id"], author, True))
+            writes.append((item["id"], fields["PR Author"]["id"], author, "text"))
+
+        for field_name, wanted in (("CI", derive_ci(pull)),
+                                   ("Size", derive_size(pull))):
+            if current.get(field_name) != wanted:
+                option = fields[field_name]["options"].get(wanted)
+                if option:
+                    writes.append((item["id"], fields[field_name]["id"],
+                                   option, "select"))
+
+        committed = last_commit_date(pull)
+        if committed and (current.get("Last commit") or "")[:10] != committed:
+            writes.append((item["id"], fields["Last commit"]["id"],
+                           committed, "date"))
 
     if not dry_run:
         applied = flush_writes(writes)

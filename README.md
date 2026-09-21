@@ -15,6 +15,27 @@ project in step with pull requests across Velox, Presto and the RAPIDS forks.
 `state/cleared.json` is what stops a cleared PR from being re-ingested;
 archiving the item alone would not.
 
+## Fields
+
+| Field | Source |
+|---|---|
+| `Workstream` | `classify.py` rules; hand edits are preserved |
+| `Blocked on` | Author / Reviewer / CI / Nothing - ready to land, from live review state |
+| `Status` | Todo, In Progress, Done, Parked |
+| `CI` | Green / Red / Running / None, from the check rollup |
+| `Size` | XS-XL by lines changed, recomputed each run since a PR grows |
+| `Last commit` | Date of the last commit |
+| `PR Author` | PR author login |
+| `Priority` | Never written by the automation |
+
+`Last commit` is stored as a date rather than an age so it cannot go stale
+between runs. It is also a better activity signal than `updatedAt`: upstream
+velox runs `stale[bot]`, whose comments reset `updatedAt` and make dormant
+PRs look fresh.
+
+`Parked` mirrors how upstream marks inactive work -- the `stale` label, plus
+`[WIP]`, `[DNR]` and `do not merge` title markers.
+
 ## Ingest rules
 
 | Repo | Rule |

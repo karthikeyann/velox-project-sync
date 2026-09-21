@@ -35,25 +35,47 @@ SCOPE_WORKSTREAM = {
 KEYWORD_WORKSTREAM = [
     (r"exchange|shuffle|outputbuffer|partitioned ?output|\bucx\b", "Exchange"),
     (r"decimal", "Decimal"),
+    (r"nvtx|thread domain|tracing|\bspans?\b|observability|runtime stats",
+     "Observability"),
     (r"iceberg|parquet|splitreader|split reader|hybrid scan|\breaders?\b|kvikio"
-     r"|asyncdatacache|data cache|hive i/o|\bs3\b|storage|\bscans?\b"
-     r"|split batching|minio", "IO & Scan"),
-    (r"timestamp|time ?zone|date_add|\bintervals?\b", "Types & Time"),
+     r"|asyncdatacache|data ?cache|\bcaches?\b|hive i/o|\bs3\b|storage"
+     r"|\bscans?\b|split batching|minio", "IO & Scan"),
+    (r"timestamp|time ?zone|date_add|date_diff|unixtime|\bintervals?\b"
+     r"|\bdates?\b", "Types & Time"),
     (r"memory|\bpools?\b|alloc|\boom\b|spill|\brmm\b|arena|byte target"
-     r"|concat batch|batched concat|compression", "GPU Memory"),
-    (r"express|simple functions?|\bnvcc\b|evaluat|\budf\b|case without"
-     r"|\bbetween\b|subfield filter|predicate|null (semantics|policy)"
-     r"|\breplace\b|\bcast\b", "GPU Expressions"),
-    (r"join|aggregat|group ?by|groupby|order ?by|window|\boperators?\b"
-     r"|\bplan\b|fragment executor", "GPU Operators"),
-    (r"\bci\b|\bbuilds?\b|cmake|docker|workflow|pin to|test harness"
-     r"|\btests?\b|spark", "Build & CI"),
+     r"|concat batch|batched concat|compression|\bstreams?\b|gpu state",
+     "GPU Memory"),
+    (r"express|simple functions?|function structs?|function signature|\bsfi\b"
+     r"|\bnvcc\b|evaluat|\budf\b|\bcase\b|\bbetween\b|filter columns?"
+     r"|subfield filter|predicate|null[ -](semantics|policy|only)|\bin list\b"
+     r"|literal|variant|\breplace\b|\bcast\b|registry", "GPU Expressions"),
+    (r"plan ?node|driveradapter|localmerge|partitionoutput|cudffromvelox"
+     r"|cudftovelox|device resident|join|aggregat|group ?by|groupby|order ?by"
+     r"|window|\boperators?\b|fragment executor", "GPU Operators"),
+    (r"tpc-?ds|tpc-?h|benchmark|staging branch|\bci\b|\bbuilds?\b|cmake"
+     r"|docker|workflow|pin to|test harness|\btests?\b|spark", "Build & CI"),
 ]
 
 # Scopes too generic to deserve their own workstream.
 SCOPE_BLOCKLIST = {"cudf", "velox", "misc", "chore", "test", "tests", "docs", "core"}
 
 UNCLASSIFIED = "Unclassified"
+
+# Title markers and upstream labels that mean the PR is deliberately not
+# moving. facebookincubator/velox runs stale[bot], which applies the "stale"
+# label; mirroring that keeps this board consistent with upstream's own
+# notion of an inactive PR.
+PARKED_LABELS = {"stale"}
+PARKED_PATTERN = re.compile(
+    r"\[wip\]|\[dnr\]|\bdnr\b|\bdnm\b|do not (land|merge|review)|\bwip\b"
+    r"|staging branch|\[ignore\]", re.I)
+
+
+def is_parked(title, labels=()):
+    """Return True when a PR is deliberately not moving."""
+    if PARKED_LABELS & {l.lower() for l in labels}:
+        return True
+    return bool(PARKED_PATTERN.search(title))
 
 
 def _scope(title):
